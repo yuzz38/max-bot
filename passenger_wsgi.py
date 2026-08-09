@@ -405,6 +405,12 @@ async def short_lead_name_handler(event: MessageCreated, context: MemoryContext)
     await context.set_state(ShortLeadForm.waiting_contact)
     await event.message.answer("Укажите номер телефона (или другой удобный контакт):")
 
+@dp.message_created(LeadForm.waiting_name)
+async def lead_name_handler(event: MessageCreated, context: MemoryContext):
+    await context.update_data(name=event.message.body.text.strip())
+    await context.set_state(LeadForm.waiting_contact)
+    await event.message.answer("Как с вами связаться? (телефон, почта или ник в MAX, Telegram)")
+
 @dp.message_created(LeadForm.waiting_contact)   
 async def lead_contact_handler(event: MessageCreated, context: MemoryContext):
     await context.update_data(contact=event.message.body.text.strip())
@@ -412,6 +418,8 @@ async def lead_contact_handler(event: MessageCreated, context: MemoryContext):
     await event.message.answer(
         'Кратко опишите, что нужно (или напишите "перезвоните", если пока не знаете точно):'
     )
+
+
 @dp.message_created(LeadForm.waiting_description)
 async def lead_description_handler(event: MessageCreated, context: MemoryContext):
     data = await context.get_data()
@@ -435,10 +443,13 @@ async def lead_description_handler(event: MessageCreated, context: MemoryContext
         f"Что нужно: {description}"
     )
     await bot.send_message(chat_id=int(admin_chat_id), text=notify_text)
-
-    await event.message.answer("Спасибо! Я свяжусь с вами в течение дня 🙌")
+    builder = with_back_button()
+    await event.message.answer(
+        "Спасибо! Я свяжусь с вами в течение дня 🙌",
+        attachments=[builder.as_markup()]
+    )
     await context.clear()
-        
+
 @dp.message_created(ShortLeadForm.waiting_contact)
 async def short_lead_contact_handler(event: MessageCreated, context: MemoryContext):
     data = await context.get_data()
@@ -462,9 +473,10 @@ async def short_lead_contact_handler(event: MessageCreated, context: MemoryConte
         f"Услуга: {service}"
     )
     await bot.send_message(chat_id=int(admin_chat_id), text=notify_text)
-
+    builder = with_back_button()
     await event.message.answer(
-        f'Спасибо! Заявка на «{service}» получена, я свяжусь с вами в течение дня 🙌'
+        f'Спасибо! Заявка на «{service}» получена, я свяжусь с вами в течение дня 🙌',
+        attachments=[builder.as_markup()]
     )
     await context.clear()
 
