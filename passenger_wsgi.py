@@ -144,6 +144,11 @@ class ShortLeadForm(StatesGroup):
     waiting_name = State()
     waiting_contact = State()
 
+
+class AIChatForm(StatesGroup):
+    active = State()
+
+
 def with_back_button(builder: InlineKeyboardBuilder = None) -> InlineKeyboardBuilder:
     if builder is None:
         builder = InlineKeyboardBuilder()
@@ -170,9 +175,12 @@ async def bot_started(event: BotStarted):
         CallbackButton(text="💼 Мои проекты", payload="my_projects"),
         CallbackButton(text="📄 Резюме", payload="resume")
     )
+    builder.row(
+                CallbackButton(text="🤖 Бесплатный AI-помощник", payload="ai_chat")
+    )
     await event.bot.send_message(
         chat_id=event.chat_id,
-        text="Привет! Меня зовут Лев и я занимаюсь разработкой сайтов с 2021 года \n\nНиже можете ознакомиться со мной, посмотреть мои работы\n\nЕсли нужен персональный сайт о вашем бизнесе/продукте или бот в MAX, смело оставляйте заявку!",
+        text="Привет! Меня зовут Лев и я занимаюсь разработкой сайтов с 2021 года \n\nНиже можете ознакомиться со мной, посмотреть мои работы\n\nЕсли нужен персональный сайт о вашем бизнесе/продукте или бот в MAX, обязательно оставляйте заявку!",
         attachments=[builder.as_markup()]
     )
 
@@ -210,7 +218,9 @@ async def menu_handler(event: MessageCreated):
         CallbackButton(text="💼 Мои проекты", payload="my_projects"),
         CallbackButton(text="📄 Резюме", payload="resume")
     )
-
+    builder.row(
+            CallbackButton(text="🤖 Бесплатный AI-помощник", payload="ai_chat")
+    )
     await event.message.answer(
         text="Выберите пункт меню:",
         attachments=[builder.as_markup()]
@@ -270,7 +280,71 @@ async def get_currency_rate(currency_code: str):
                 return None
             return valute["Value"] / valute["Nominal"]
 
+GIGACHAT_AUTH_KEY = os.getenv("GIGACHAT_AUTH_KEY")
+_gigachat_token = None
+_gigachat_token_expires = 0
 
+async def get_gigachat_token():
+    """Получает (или переиспользует) OAuth-токен GigaChat."""
+    global _gigachat_token, _gigachat_token_expires
+
+    if _gigachat_token and time.time() < _gigachat_token_expires:
+        return _gigachat_token
+
+    import uuid as uuid_module
+
+    async with aiohttp.ClientSession() as session:
+        async with session.post(
+            "https://ngw.devices.sberbank.ru:9443/api/v2/oauth",
+            headers={
+                "Authorization": f"Basic {GIGACHAT_AUTH_KEY}",
+                "RqUID": str(uuid_module.uuid4()),
+                "Content-Type": "application/x-www-form-urlencoded",
+            },
+            data={"scope": "GIGACHAT_API_PERS"},
+            ssl=False,  # для GigaChat нужны сертификаты Минцифры; без них отключаем проверку SSL
+            timeout=aiohttp.ClientTimeout(total=15),
+        ) as response:
+            if response.status != 200:
+                text = await response.text()
+                logger.error("GigaChat auth error %s: %s", response.status, text)
+                return None
+            data = await response.json()
+            _gigachat_token = data["access_token"]
+            # токен обычно живёт ~30 минут, обновим чуть заранее
+            _gigachat_token_expires = time.time() + 25 * 60
+            return _gigachat_token
+
+
+async def ask_ai(history: list):
+    token = await get_gigachat_token()
+    if token is None:
+        return None, "Не удалось получить токен авторизации GigaChat"
+
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                "https://gigachat.devices.sberbank.ru/api/v1/chat/completions",
+                headers={
+                    "Authorization": f"Bearer {token}",
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "model": "GigaChat",
+                    "messages": history,
+                },
+                ssl=False,
+                timeout=aiohttp.ClientTimeout(total=30),
+            ) as response:
+                text = await response.text()
+                if response.status != 200:
+                    return None, f"HTTP {response.status}: {text[:500]}"
+                data = json.loads(text)
+                return data["choices"][0]["message"]["content"], None
+    except Exception as e:
+        return None, f"Exception: {repr(e)[:500]}"
+
+        
 @dp.message_callback()
 async def callback_handler(event: MessageCallback, context: MemoryContext):
     payload = event.callback.payload
@@ -291,6 +365,9 @@ async def callback_handler(event: MessageCallback, context: MemoryContext):
             CallbackButton(text="💼 Мои проекты", payload="my_projects"),
             CallbackButton(text="📄 Резюме", payload="resume")
         )
+        builder.row(
+            CallbackButton(text="🤖 Бесплатный AI-помощник", payload="ai_chat")
+        )
         await event.message.answer(
             text="Выберите пункт меню:",
             attachments=[builder.as_markup()]
@@ -300,6 +377,13 @@ async def callback_handler(event: MessageCallback, context: MemoryContext):
         builder = with_back_button()
         await event.message.answer(
             'Это тестовый бот для MAX, написанный на Python 🐍\n\n'
+            '📌 Что он умеет:\n\n'
+            'Показывает список услуг — разработка сайтов, техподдержка, email-рассылки, боты под ключ.\nНажал кнопку — узнал, что входит, тут же можно оставить заявку.\n\n'
+            'Собирает заявки в базу — имя, контакт, что нужно. Мне прилетает уведомление, ничего не теряется в переписке.\n\n'
+            'Общается через AI — в боте есть бесплатный AI-помощник от Сбера, отвечает на любые вопросы прямо в диалоге.\n\n'
+            'Показывает мое портфолио с реальными проектами — картинки, описание, ссылки.\n\n'
+            'Считает курсы валют — просто полезная фишка. Работает с открытым API от ЦБ РФ\n\n'
+            'Бот работает на хостинге от РЕГ.РУ через Webhook 24/7. Именно так будет работать и ваш, если закажете.\n\n'
             'Если нужен бот — <a href="https://max.ru/u/f9LHodD0cOL1sPfDwcYjosUM5U_wiZi5Da4enWOwRHSDHuYUt5jrHv8lhQI">напишите мне</a>!\n\n'
             'А еще я профессионально занимаюсь разработкой сайтов с 2021 года, буду рад помочь!',
             format=Format.HTML,
@@ -398,6 +482,24 @@ async def callback_handler(event: MessageCallback, context: MemoryContext):
             await context.update_data(service=service["title"])
             await context.set_state(ShortLeadForm.waiting_name)
             await event.message.answer("Отлично! Как вас зовут?")
+
+    elif payload == "ai_chat":
+        await context.set_state(AIChatForm.active)
+        await context.update_data(history=[])
+        builder = InlineKeyboardBuilder()
+        builder.row(CallbackButton(text="🚪 Выйти из диалога", payload="exit_ai"))
+        await event.message.answer(
+            "🤖 Вы в диалоге с бесплатным AI-помощником!\n\nЗадайте любой вопрос — я передам его нейросети и пришлю ответ.",
+            attachments=[builder.as_markup()]
+        )
+
+    elif payload == "exit_ai":
+        await context.clear()
+        builder = with_back_button()
+        await event.message.answer(
+            "Диалог с AI завершён 👋",
+            attachments=[builder.as_markup()]
+        )
 
 @dp.message_created(ShortLeadForm.waiting_name)
 async def short_lead_name_handler(event: MessageCreated, context: MemoryContext):
@@ -515,6 +617,35 @@ async def amount_handler(event: MessageCreated, context: MemoryContext):
     await context.clear()
 
 
+
+@dp.message_created(AIChatForm.active)
+async def ai_chat_handler(event: MessageCreated, context: MemoryContext):
+    user_text = event.message.body.text.strip()
+
+    data = await context.get_data()
+    history = data.get("history", [])
+
+    history.append({"role": "user", "content": user_text})
+    # ограничиваем историю последними 10 сообщениями, чтобы не раздувать запрос
+    history = history[-10:]
+
+    reply, error = await ask_ai(history)
+
+    builder = InlineKeyboardBuilder()
+    builder.row(CallbackButton(text="🚪 Выйти из диалога", payload="exit_ai"))
+
+    if reply is None:
+        await event.message.answer(
+            f"😔 Ошибка:\n{error}",
+            attachments=[builder.as_markup()]
+        )
+        return
+
+    
+    history.append({"role": "assistant", "content": reply})
+    await context.update_data(history=history)
+
+    await event.message.answer(reply, attachments=[builder.as_markup()])
 # ==================== WSGI-ОБВЯЗКА ====================
 
 _dispatcher_started = False
